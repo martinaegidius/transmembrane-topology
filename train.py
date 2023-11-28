@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 import pickle
 #import pdbreader
 from torch.utils.data import DataLoader
-import transmembraneDataset
+from transmembraneDataset import transmembraneDataset
 import transmembraneUtils as tmu
 import torch
 from transmembraneModels import GraphEncDec, init_linear_weights
@@ -20,7 +20,7 @@ N_EPOCHS = 300
 print_every = 20
 eval_every = 10
 DECODER = "LSTMB"
-NUM_SAMPLES = 64
+NUM_SAMPLES = 3
 EXPERIMENTTYPE = "OVERFIT"
 SPLITTYPE = "PROTOTYPE"
 FEATURISERFLAG = "SIMPLE"
@@ -71,7 +71,9 @@ torch.manual_seed(1)
 
 #let's try generating the tensor data-set and see what happens
 #pdb_dir = "data/graphein_downloads/" #downloaded using AFv4
-pdb_dir = os.environ["BLACKHOLE"]+"/data/graphein_downloads/" #this gives /dtu/... may need to exclude first /
+#pdb_dir = os.environ["BLACKHOLE"]+"/data/graphein_downloads/" #this gives /dtu/... may need to exclude first /
+pdb_dir = "/home/max/Documents/s194119/fall2023/deep learning project/transmembrane-topology/data/graphein_downloads"
+print(pdb_dir)
 trainSet = transmembraneDataset(root=pdb_dir,setType="train",proteinlist=trainnames,labelDict=trainlabels,mismatching_proteins=mismatches)
 valSet = transmembraneDataset(root=pdb_dir,setType="val",proteinlist=valnames,labelDict=vallabels,mismatching_proteins=mismatches)
 testSet = transmembraneDataset(root=pdb_dir,setType="test",proteinlist=testnames,labelDict=testlabels,mismatching_proteins=mismatches)
