@@ -1,6 +1,5 @@
 import graphein.protein.tensor as gpt
 from torch_geometric.data import Dataset as gDataset
-from torch_geometric.loader import DataLoader
 import glob
 import os.path as osp
 import torch
@@ -18,9 +17,9 @@ class transmembraneDataset(gDataset):
         self.setType = setType
         self.labels = labelDict
         self.flush_files = flush_files
-        print("self root local: ",self.root_local)
-        print("protein list: ")
-        print(self.proteinlist)
+        #print("self root local: ",self.root_local)
+        #print("protein list: ")
+        #print(self.proteinlist)
         #print("pdb dir: ",self.pdb_dir)
         super().__init__(root, transform, pre_transform, pre_filter)
 
@@ -62,7 +61,7 @@ class transmembraneDataset(gDataset):
         #print("Processed dir: ",self.processed_dir)
         all_files_tmp = glob.glob(osp.join(self.processed_dir, f'{self.setType}_protein_*.pt'))
         if(len(all_files_tmp)>=len(self.proteinlist) and self.flush_files==False): ##case: all proteins are present
-            print(f"Length of proteinnames {len(self.proteinlist)} is == or larger than length of existing proteins in processed dir {len(all_files_tmp)}")
+            #print(f"Length of proteinnames {len(self.proteinlist)} is == or larger than length of existing proteins in processed dir {len(all_files_tmp)}")
             return
 
         for i, raw_path in enumerate(self.raw_paths):
@@ -116,7 +115,7 @@ class transmembraneDataset(gDataset):
         return len(self.processed_file_names)
 
     def get(self,idx):
-        data = torch.load(osp.join(self.processed_dir, f'{self.setType}_protein_{idx}.pt'),map_location='cuda:0')
+        data = torch.load(osp.join(self.processed_dir, f'{self.setType}_protein_{idx}.pt'),map_location='cuda')
         #need to also return labels for the given protein
         return data
 
