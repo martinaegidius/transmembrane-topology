@@ -5,10 +5,10 @@ from proteinworkshop.datasets.utils import create_example_batch
 from torch_geometric.loader import DataLoader
 import pickle
 from transmembraneDataset import transmembraneDataset
-import transmembraneUtils as tmu
+import transmembraneUtilsPacked as tmu
 import torch
-from transmembraneModels import GraphEncDec 
-from transmembraneModels import init_linear_weights
+from transmembraneModelsPacked import GraphEncDec 
+from transmembraneModelsPacked import init_linear_weights
 import os 
 from torch_geometric.utils import unbatch
 import wandb
@@ -167,35 +167,19 @@ if(param_cfg["Featuriser"]=="COMPLEX"):#in general, according to paper, this sho
 
 
 
-# for i, data in enumerate(trainloader):
-#     print(i)
-#     print(data)
-
-
 ###--------------------------- Start training -------------------------
 if(param_cfg["TRACKING"]==True):
   wandb.login(key="b84e040f3273aa091bbc451cf6e8ae81fa9b09f1")
-  #session = losswise.Session(tag="HPC",max_iter=param_cfg["N_EPOCHS"],params=param_cfg,track_git=False)
-  #lossGraph = session.graph("loss",kind="min")
-  #accGraph = session.graph("Accuracy",kind="max")
-  #accGraphOverlap = session.graph("Overlap accuracy",kind="max")
   run = wandb.init(project=param_cfg["experimentType"],config=param_cfg)
 
-
-model = GraphEncDec(featuriser=featuriser, n_classes=6,hidden_dim_GCN=param_cfg["GCSize"],decoderType=param_cfg["DecoderType"],LSTM_hidden_dim=param_cfg["LSTMSize"],dropout=param_cfg["Dropout"],LSTMnormalization = param_cfg["LSTMNORM"])
-#if(param_cfg["DecoderType"]=="Linear"):
+model = GraphEncDec(featuriser=featuriser, n_classes=6,hidden_dim_GCN=param_cfg["GCSize"],decoderType=param_cfg["DecoderType"],LSTM_hidden_dim=param_cfg["LSTMSize"],dropout=param_cfg["Dropout"],LSTMnormalization = param_cfg["LSTMNORM"],sequence=True)
 model.apply(init_linear_weights) #change to xavier normal init
 model = model.to(device)
-#print("Initialization predictions: ")
-#tmu.dataset_accuracy(model,trainloader,type2key,mode="PRINT")
 optimizer = torch.optim.Adam(model.parameters(),lr=param_cfg["LR"],weight_decay=param_cfg["WEIGHTDECAY"])
 criterion = torch.nn.CrossEntropyLoss()
 if(param_cfg["OPTIMSCHEDULE"]!="NONE"):
    torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
 epoch_loss = []
-#outputs = []
-
-
 
 ###MANAGE TRACKING OF MODEL WEIGHTS, PREDICTIONS AND LABELS
 if(param_cfg["TRACKING"]==True):
@@ -250,7 +234,7 @@ for i in range(param_cfg["N_EPOCHS"]):
     if(param_cfg["BATCH_SZ"]==1):
       loss /= len(trainSet)
     else:
-      loss /= len(trainloader) #number of batches in loader
+      loss /= len(trainloader) #number of batches in loader, slightly positively biased if the number of batches is not equal
     epoch_loss.append(loss)
     train_metrics = {"train/loss":loss,
                      "train/epoch":i}
@@ -269,19 +253,20 @@ for i in range(param_cfg["N_EPOCHS"]):
       val_incorrect = 0
       with torch.no_grad():
         for data in valloader:
-          pred = model(data)
+          v_loss = 0.0
+          pred,protein_lengths = model(data,data.batch)
           label = tmu.label_to_tensor(data.label,type2key)
-          #print(pred.shape)
-          #print(label.shape)
-          #print("label in val: ",label)
-          #print("with type: ",type(label))
-          v_loss = criterion(pred,label)
+          label = torch.split(label,protein_lengths)
+          batch_sz = len(label)
+          for output_, label_ in zip(output,label):
+            v_loss += criterion(output_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
+          v_loss /= batch_sz #normalize loss so it is corresponding to length of the batch
           valloss += v_loss
           val_loss_li.append(v_loss.item())
       if(param_cfg["BATCH_SZ"]==1):
          valloss /= len(valSet)
       else:
-         valloss /= len(valloader)
+         valloss /= len(valloader) #also normalize using the number of batches
       
       val_acc,val_acc_overlap = tmu.dataset_accuracy(model,valloader,type2key) #get accuracy
       print(f"Val accuracy/overlap {val_acc}/{val_acc_overlap}")
@@ -289,24 +274,12 @@ for i in range(param_cfg["N_EPOCHS"]):
       print(f"Train accuracy/overlap {train_acc}/{train_acc_overlap}")
       if(param_cfg["TRACKING"]==True):
         #get sample logs from VAL #after debugging this should maybe be wrapped in a function
-        pred = model.predict(data)
-        if(param_cfg["BATCH_SZ"]>1):
-           pred_unbatched = list(unbatch(pred,data.batch))
-        else: 
-           pred_unbatched = pred
-
-        # print("prediction total shape: ",pred.shape)
-        # print("prediction unbatched shape: ",len(pred_unbatched))
-        # for entry in pred_unbatched:
-        #    print("Sub shape: ", entry.shape)
-        # print("Number of labels:")
-        # print(len(data.label))
-        # print("With sub shapes")
-        # for lab_ in data.label:
-        #    print(lab_.shape)
-        log_nsamples = param_cfg["BATCH_SZ"]#always get for a single batch 
+        pred,protein_lengths = model.predict(data,data.batch) #gives a list 
+        label = tmu.label_to_tensor(data.label,type2key)
+        label = torch.split(label,protein_lengths)
+        log_nsamples = len(pred) #always get for a single batch 
         epoch_ = [i for x in range(log_nsamples)] #repeat so it matches
-        ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_= tmu.log_batch_elementwise_accuracies(pred_unbatched,data,type2key=type2key)
+        ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_= tmu.log_batch_elementwise_accuracies(pred,label,data.id)
         if(param_cfg["DEBUG"]):
           print(f"val: elementwise: {accuracy_}/{overlap_match_}")
         log_prediction_table(epoch_,ids_,labels_,preds_,accuracy_,overlap_match_,label_type_,pred_type_,type="val")
@@ -314,16 +287,19 @@ for i in range(param_cfg["N_EPOCHS"]):
         #get sample logs from train 
         data = train_data_log #use same sample to not mess-up logging (else wandb believes another epoch has passed)
         #print("OUTPUT FROM NEXT TRAINLOADER ",data)
-        pred = model.predict(data)
-        if(param_cfg["BATCH_SZ"]>1):
-           pred_unbatched = list(unbatch(pred,data.batch))
-        else: 
-           pred_unbatched = pred
+        pred, protein_lengths = model.predict(data,data.batch)
+        label = tmu.label_to_tensor(data.label,type2key)
+        label = torch.split(label,protein_lengths)
+        
+        #if(param_cfg["BATCH_SZ"]>1):
+        #   pred_unbatched = list(unbatch(pred,data.batch))
+        #else: 
+        #   pred_unbatched = pred
         
         
-        ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_ = tmu.log_batch_elementwise_accuracies(pred_unbatched,data,type2key=type2key)
+        ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_ = tmu.log_batch_elementwise_accuracies(pred,label,data.id)
         if(param_cfg["DEBUG"]):
-           print(f"val: elementwise: {accuracy_}/{overlap_match_}")
+           print(f"train: elementwise: {accuracy_}/{overlap_match_}")
         log_prediction_table(epoch_,ids_,labels_,preds_,accuracy_,overlap_match_,label_type_,pred_type_,type="train")
 
         val_metrics = {"val/eval_epoch": i,
@@ -363,65 +339,48 @@ test_predictions = {}
 
 with torch.no_grad():
   sm = torch.nn.Softmax(dim=1)
-  if(param_cfg["TRACKING"]==True):
-     if(param_cfg["BATCH_SZ"]==1):
-        test_sample_idx = [int(np.random.random()*len(testloader)) for _ in range(10)] #save ten samples
-     else:
-        test_sample_idx = [int(np.random.random()*len(testloader))]
+  if(param_cfg["TRACKING"]==True): 
+    test_sample_idx = [int(np.random.random()*param_cfg["BATCH_SZ"])] #choose which batches to log to table
   for i, data in enumerate(testloader): #always evaluated as single batch - maybe should be fixed
-    output = model(data)
-    label_f = tmu.label_to_tensor(data.label,type2key)
-    loss = criterion(output,label_f) #no need to worry about batching as graph is disjoint by design -> in principle no batching
-    test_loss += loss.item()
-    preds_sm = sm(output)
-    preds_test = torch.argmax(preds_sm,dim=1)      
-    if(param_cfg["TRACKING"]==True):
-        if i in test_sample_idx: #save results to table
-            if(param_cfg["BATCH_SZ"]>1):
-                pred_unbatched = list(unbatch(preds_test,data.batch))
-            else:
-                pred_unbatched = preds_test
-            epoch_ = [param_cfg["N_EPOCHS"]]#repeat so it matches
-            ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_ = tmu.log_batch_elementwise_accuracies(pred_unbatched,data,type2key=type2key)
-            log_prediction_table(epoch_,ids_,labels_,preds_,accuracy_,overlap_match_,label_type_,pred_type_,type="test")
+    loss = 0.0
+    preds,protein_lengths = model(data,data.batch)
+    label = tmu.label_to_tensor(data.label,type2key) #numeric conversion
+    label = torch.split(label,protein_lengths)
+    labelStr = torch.split(data.label,protein_lengths) #unbatch
 
-    #we still want to save per-protein predictions, so we unbatch
-    if(len(data.label)>1): #case: is batched
-       unbatched_preds = unbatch(preds_test,data.batch)
-       unbatched_probs = unbatch(preds_sm,data.batch)
-       for j, pred_label in enumerate(unbatched_preds): #save predictions
-          labelStr = tmu.tensor_to_label(pred_label,type2key)
-          labelU = tmu.label_to_tensor(data.label[j],type2key)
-          proteinTypePred,pred_protein_label = tmu.type_from_labels(pred_label)
-          proteinTypeLabel,true_protein_label = tmu.type_from_labels(labelU)
+    pred_classes = []
+    for pred_, label_,id_,labelStr_ in zip(preds,label,data.id,labelStr):
+       loss_ = criterion(pred_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
+       loss += loss_.item()
+       pred_sm = sm(pred_)
+       pred_test_ = torch.argmax(pred_sm,dim=1)
+       pred_classes.append(pred_test_)   
+
+       predStr = tmu.tensor_to_label(pred_test_,type2key)
+
+       proteinTypePred,pred_protein_label = tmu.type_from_labels(pred_test_)
+       proteinTypeLabel,true_protein_label = tmu.type_from_labels(label_)
           #print("shooting into loss: ")
           #print(unbatched_probs[j])
           #print(labelU)
           ###add in matching aswell 
           #get topology 
-          preds_top = tmu.label_list_to_topology(pred_label)
-          label_top = tmu.label_list_to_topology(labelU)
-          match_tmp = tmu.is_topologies_equal(label_top,preds_top)
+       preds_top = tmu.label_list_to_topology(pred_test_)
+       label_top = tmu.label_list_to_topology(label_)
+       match_tmp = tmu.is_topologies_equal(label_top,preds_top)
 
 
-          loss_tmp = criterion(unbatched_probs[j],labelU)
-          test_loss_results[data.id[j].replace("_ABCD","")] = loss_tmp.item()
-          test_predictions[data.id[j].replace("_ABCD","")] = {"prediction":labelStr,"label":data.label[j],"Type prediction":pred_protein_label,"Type label":true_protein_label,"Match":match_tmp}
-          #if(i==710):
-          #  print("Saving string: ", labelStr)
-          #  print("Saving label: ",data.label[j])
-    else:
-      preds_top = tmu.label_list_to_topology(preds_test)
-      label_top = tmu.label_list_to_topology(label_f)
-      match_tmp = tmu.is_topologies_equal(label_top,preds_top)
-      #print("Unbatched preds shape: ",preds_test.shape)
-      #print("Unbatched labels shape: ",label_f.shape)
-      test_loss_results[data.id[0].replace("_ABCD","")] = loss.item()
-      label_string = tmu.tensor_to_label(preds_test,type2key)
-      _, pred_protein_label = tmu.type_from_labels(preds_test)
-      _, true_protein_label = tmu.type_from_labels(label_f)
-      test_predictions[data.id[0].replace("_ABCD","")] = {"prediction":label_string,"label":data.label,"Type prediction":pred_protein_label,"Type label":true_protein_label,"Match":match_tmp}
-      
+       test_loss_results[id_.replace("_ABCD","")] = loss_.item()
+       test_predictions[id_.replace("_ABCD","")] = {"prediction":pred_,"label":labelStr_,"Type prediction":pred_protein_label,"Type label":true_protein_label,"Match":match_tmp}   
+    loss/=len(preds) #normalize for batch
+    test_loss += loss.item()
+    if(param_cfg["TRACKING"]==True):
+        if i in test_sample_idx: #if this batch is to be saved to table
+            epoch_ = [param_cfg["N_EPOCHS"] for x in len(pred_classes)]#repeat so it matches
+            ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_ = tmu.log_batch_elementwise_accuracies(pred_classes,label,data.id)
+            log_prediction_table(epoch_,ids_,labels_,preds_,accuracy_,overlap_match_,label_type_,pred_type_,type="test")
+
+
 if(param_cfg["BATCH_SZ"]==1):
    mean_test_loss = test_loss/len(testSet)
 else:

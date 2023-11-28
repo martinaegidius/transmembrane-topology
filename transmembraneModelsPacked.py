@@ -10,6 +10,10 @@ from proteinworkshop.types import EncoderOutput
 from graphein.protein.tensor.data import get_random_protein
 from proteinworkshop.datasets.utils import create_example_batch
 
+#added imports 
+from torch_geometric.utils import unbatch
+from torch.nn.utils.rnn import pack_sequence, unpack_sequence
+
 class SchNetModel(SchNet):
     #default values overwritten by cfg default settings
     def __init__(
@@ -190,10 +194,79 @@ class LSTMDecoder(torch.nn.Module):
       else:
          x_in = x["node_embedding"]
 
-      lstmoutput, _ = self.LSTM(x_in)
+      lstmoutput, hidden = self.LSTM(x_in)
+      #for x in hidden: print(x.shape)
+      #print("lstmoutput ", lstmoutput.shape)
+      #print("state 0 shape: ",state[0].shape)
+      #print("state 1 shape: ",state[1].shape)
       out = self.proj(lstmoutput)
       return out
    
+
+class LSTMDecoder(torch.nn.Module):
+   def __init__(self,n_classes=6, GCN_hidden_dim = 32, LSTM_hidden_dim = 32, dropout = 0.0, type="LSTMB",LSTMnormalization = False):
+      super(LSTMDecoder, self).__init__()
+      #self.linear1 = linear(in_features=20,out_channels=n_classes)
+      if(type=="LSTMO"):
+         bid = False
+         self.proj = torch.nn.Linear(LSTM_hidden_dim,n_classes) #project to per class sequence
+      elif(type=="LSTMB"):
+         bid = True
+         self.proj = torch.nn.Linear(LSTM_hidden_dim*2,n_classes) #project to per class sequence
+
+      if(LSTMnormalization):
+         self.norm = torch.nn.LayerNorm(GCN_hidden_dim)
+      else:
+         self.norm = None
+      self.LSTM = torch.nn.LSTM(input_size = GCN_hidden_dim,hidden_size=LSTM_hidden_dim,dropout=dropout,bidirectional=bid)
+
+
+      self.init_LSTM()
+
+   def init_LSTM(self):
+      # for weight in self.LSTM._all_weights:
+      #    if("weight" in weight):
+      #       torch.nn.init.xavier_normal_(getattr(self.LSTM,weight))
+      #    if("bias" in weight):
+      #       torch.nn.init.normal_(getattr(self.LSTM,weight))
+      for name, param in self.LSTM.named_parameters():
+         if 'bias' in name:
+            torch.nn.init.constant_(param, 0.0)
+         elif 'weight' in name:
+            torch.nn.init.xavier_normal_(param)
+      print("Initialized LSTM layers")
+
+   def forward(self,x,batch):
+      if(self.norm!=None):
+         x_in = self.norm(x["node_embedding"]) #equivalent to batch norm
+      else:
+         x_in = x["node_embedding"]
+
+      #also return list of labels 
+      
+
+      #create a packed sequence object 
+      unbatched = list(unbatch(x_in,batch)) #step 1: unbatch
+      #print("Number of unbatched elements: ",len(unbatched))
+      #print("Each with shape: ")
+      #for i, x in enumerate(unbatched): print(f"\t protein {i}: {x.shape}")
+      pseq = pack_sequence(unbatched,enforce_sorted=False) #step two: pack (includes zero-padding)
+
+      #print("LSTM INPUT SHAPE: ",x_in.shape)
+      #lstmoutput, hidden = self.LSTM(x_in) #without packed sequence
+      lstmoutput, _ = self.LSTM(pseq)
+      X = unpack_sequence(lstmoutput) #list of tensors
+      output = []
+      protein_lengths = []
+      for x in X: #can't use batch-dimension, as proteins are of different lengths!
+         out = self.proj(x)
+         output.append(out)
+         protein_lengths.append(out.shape[0])
+
+      
+      return output, protein_lengths #list of tensors
+
+
 def init_linear_weights(m):
    if isinstance(m, torch.nn.Linear):
       torch.nn.init.xavier_normal_(m.weight)
@@ -209,8 +282,7 @@ class GraphEncDec(torch.nn.Module):
       if(decoderType=="linear"):
          self.decoder =  DenseDecoder(n_classes=n_classes,hidden_dim=hidden_dim_GCN)
       elif(decoderType!="linear"): #one directional LSTM
-         self.decoder = LSTMDecoder(n_classes=n_classes,GCN_hidden_dim=hidden_dim_GCN, LSTM_hidden_dim = LSTM_hidden_dim, dropout = dropout, type=decoderType,LSTMnormalization=LSTMnormalization)
-        
+        self.decoder = LSTMDecoder(n_classes=n_classes,GCN_hidden_dim=hidden_dim_GCN, LSTM_hidden_dim = LSTM_hidden_dim, dropout = dropout, type=decoderType,LSTMnormalization=LSTMnormalization)
       self.softmax = torch.nn.Softmax(dim=1)
 
    def init_lazy_layers(self):
@@ -219,14 +291,19 @@ class GraphEncDec(torch.nn.Module):
       print("initialized lazy layers")
       return
 
-   def forward(self,X):
+   def forward(self,X,batch):
+      #print("RECEIVED ",X)
       embeddings = self.encoder(self.featuriser(X)) #returns a dict containing node_embedding and node_encoding
       #print("Encoder outputs: ",embeddings.keys())
-      predictions = self.decoder(embeddings)
-      return predictions
+      predictions, protein_lengths = self.decoder(embeddings,batch)
+      return predictions, protein_lengths
 
-   def predict(self,X):
-      preds = self.forward(self.featuriser(X))
-      sm = self.softmax(preds)
-      return torch.argmax(sm,dim=1)
+   def predict(self,X,batch):
+      preds,protein_lengths = self.forward(self.featuriser(X),batch)
+      pred_li = []
+      for pred_ in preds:
+         sm = self.softmax(pred_)
+         pred_tmp = torch.argmax(sm,dim=1)
+         pred_li.append(pred_tmp)
+      return pred_li, protein_lengths
 

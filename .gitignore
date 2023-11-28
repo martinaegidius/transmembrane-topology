@@ -7,3 +7,6 @@ __pycache__/**
 *.err
 *.out
 wandb/**
+weights/**
+*.csv
+
