@@ -4,3 +4,6 @@ Papers Uploaded to remarkable/**
 Read papers/**
 Download/**
 __pycache__/**
+*.err
+*.out
+wandb/**
