@@ -1,7 +1,7 @@
 #!/bin/sh 
 ### General options 
 ### -- specify queue -- 
-#BSUB -q gpuv100
+#BSUB -q gpua100
 ### -- set the job Name -- 
 #BSUB -J transmembrane
 ### -- ask for number of cores (default: 1) -- 
@@ -31,4 +31,4 @@
 # here follow the commands you want to execute
 module load python3/3.10.12
 source $HOME/transmembrane/bin/activate
-python3 train_call_script2.py
+python3 train_call_script_2.py

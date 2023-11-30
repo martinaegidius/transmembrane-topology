@@ -155,56 +155,56 @@ class DenseDecoder(torch.nn.Module):
       #print("Decoder layer received a shape: ",x["node_embedding"].shape)
       return self.ll(x["node_embedding"])
 
-class LSTMDecoder(torch.nn.Module):
-   def __init__(self,n_classes=6, GCN_hidden_dim = 32, LSTM_hidden_dim = 32, dropout = 0.0, type="LSTMB",LSTMnormalization = False):
-      super(LSTMDecoder, self).__init__()
-      #self.linear1 = linear(in_features=20,out_channels=n_classes)
-      if(type=="LSTMO"):
-         bid = False
-         self.proj = torch.nn.Linear(LSTM_hidden_dim,n_classes) #project to per class sequence
-      elif(type=="LSTMB"):
-         bid = True
-         self.proj = torch.nn.Linear(LSTM_hidden_dim*2,n_classes) #project to per class sequence
+# class LSTMDecoder(torch.nn.Module):
+#    def __init__(self,n_classes=6, GCN_hidden_dim = 32, LSTM_hidden_dim = 32, dropout = 0.0, type="LSTMB",LSTMnormalization = False,lstm_layers=1):
+#       super(LSTMDecoder, self).__init__()
+#       #self.linear1 = linear(in_features=20,out_channels=n_classes)
+#       if(type=="LSTMO"):
+#          bid = False
+#          self.proj = torch.nn.Linear(LSTM_hidden_dim,n_classes) #project to per class sequence
+#       elif(type=="LSTMB"):
+#          bid = True
+#          self.proj = torch.nn.Linear(LSTM_hidden_dim*2,n_classes) #project to per class sequence
 
-      if(LSTMnormalization):
-         self.norm = torch.nn.LayerNorm(GCN_hidden_dim)
-      else:
-         self.norm = None
-      self.LSTM = torch.nn.LSTM(input_size = GCN_hidden_dim,hidden_size=LSTM_hidden_dim,dropout=dropout,bidirectional=bid)
+#       if(LSTMnormalization):
+#          self.norm = torch.nn.LayerNorm(GCN_hidden_dim)
+#       else:
+#          self.norm = None
+#       self.LSTM = torch.nn.LSTM(input_size = GCN_hidden_dim,hidden_size=LSTM_hidden_dim,dropout=dropout,bidirectional=bid,num_layers=lstm_layers)
 
 
-      self.init_LSTM()
+#       self.init_LSTM()
 
-   def init_LSTM(self):
-      # for weight in self.LSTM._all_weights:
-      #    if("weight" in weight):
-      #       torch.nn.init.xavier_normal_(getattr(self.LSTM,weight))
-      #    if("bias" in weight):
-      #       torch.nn.init.normal_(getattr(self.LSTM,weight))
-      for name, param in self.LSTM.named_parameters():
-         if 'bias' in name:
-            torch.nn.init.constant_(param, 0.0)
-         elif 'weight' in name:
-            torch.nn.init.xavier_normal_(param)
-      print("Initialized LSTM layers")
+#    def init_LSTM(self):
+#       # for weight in self.LSTM._all_weights:
+#       #    if("weight" in weight):
+#       #       torch.nn.init.xavier_normal_(getattr(self.LSTM,weight))
+#       #    if("bias" in weight):
+#       #       torch.nn.init.normal_(getattr(self.LSTM,weight))
+#       for name, param in self.LSTM.named_parameters():
+#          if 'bias' in name:
+#             torch.nn.init.constant_(param, 0.0)
+#          elif 'weight' in name:
+#             torch.nn.init.xavier_normal_(param)
+#       print("Initialized LSTM layers")
 
-   def forward(self,x):
-      if(self.norm!=None):
-         x_in = self.norm(x["node_embedding"])
-      else:
-         x_in = x["node_embedding"]
+#    def forward(self,x):
+#       if(self.norm!=None):
+#          x_in = self.norm(x["node_embedding"])
+#       else:
+#          x_in = x["node_embedding"]
 
-      lstmoutput, hidden = self.LSTM(x_in)
-      #for x in hidden: print(x.shape)
-      #print("lstmoutput ", lstmoutput.shape)
-      #print("state 0 shape: ",state[0].shape)
-      #print("state 1 shape: ",state[1].shape)
-      out = self.proj(lstmoutput)
-      return out
+#       lstmoutput, hidden = self.LSTM(x_in)
+#       #for x in hidden: print(x.shape)
+#       #print("lstmoutput ", lstmoutput.shape)
+#       #print("state 0 shape: ",state[0].shape)
+#       #print("state 1 shape: ",state[1].shape)
+#       out = self.proj(lstmoutput)
+#       return out
    
 
 class LSTMDecoder(torch.nn.Module):
-   def __init__(self,n_classes=6, GCN_hidden_dim = 32, LSTM_hidden_dim = 32, dropout = 0.0, type="LSTMB",LSTMnormalization = False):
+   def __init__(self,n_classes=6, GCN_hidden_dim = 32, LSTM_hidden_dim = 32, dropout = 0.0, type="LSTMB",LSTMnormalization = False,lstm_layers=1):
       super(LSTMDecoder, self).__init__()
       #self.linear1 = linear(in_features=20,out_channels=n_classes)
       if(type=="LSTMO"):
@@ -218,7 +218,7 @@ class LSTMDecoder(torch.nn.Module):
          self.norm = torch.nn.LayerNorm(GCN_hidden_dim)
       else:
          self.norm = None
-      self.LSTM = torch.nn.LSTM(input_size = GCN_hidden_dim,hidden_size=LSTM_hidden_dim,dropout=dropout,bidirectional=bid)
+      self.LSTM = torch.nn.LSTM(input_size = GCN_hidden_dim,hidden_size=LSTM_hidden_dim,dropout=dropout,bidirectional=bid,num_layers=lstm_layers)
 
 
       self.init_LSTM()
@@ -273,16 +273,16 @@ def init_linear_weights(m):
    #print("initialized linear weights")
 
 class GraphEncDec(torch.nn.Module):
-   def __init__(self,featuriser,n_classes=6,hidden_dim_GCN = 32, decoderType="linear", LSTM_hidden_dim = 0, dropout = 0.0, LSTMnormalization = False):
+   def __init__(self,featuriser,n_classes=6,hidden_dim_GCN = 32, decoderType="linear", LSTM_hidden_dim = 0, dropout = 0.0, LSTMnormalization = False,lstm_layers=1):
       #do all necessary init stuff.
       super(GraphEncDec,self).__init__()
-      self.encoder = SchNetModel(out_dim=hidden_dim_GCN)
+      self.encoder = SchNetModel(out_dim=hidden_dim_GCN).to("cpu")
       self.featuriser = featuriser
       self.init_lazy_layers()  #initialize weights of LazyLinear layers by forwarding a random batch
       if(decoderType=="linear"):
          self.decoder =  DenseDecoder(n_classes=n_classes,hidden_dim=hidden_dim_GCN)
       elif(decoderType!="linear"): #one directional LSTM
-        self.decoder = LSTMDecoder(n_classes=n_classes,GCN_hidden_dim=hidden_dim_GCN, LSTM_hidden_dim = LSTM_hidden_dim, dropout = dropout, type=decoderType,LSTMnormalization=LSTMnormalization)
+        self.decoder = LSTMDecoder(n_classes=n_classes,GCN_hidden_dim=hidden_dim_GCN, LSTM_hidden_dim = LSTM_hidden_dim, dropout = dropout, type=decoderType,LSTMnormalization=LSTMnormalization,lstm_layers=lstm_layers)
       self.softmax = torch.nn.Softmax(dim=1)
 
    def init_lazy_layers(self):

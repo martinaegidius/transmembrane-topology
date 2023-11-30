@@ -6,7 +6,7 @@ import string
 import random
 
 
-BATCH_SZ = 32
+BATCH_SZ = 2
 LR = 1e-04
 GCSIZE = [512]
 LSTMSIZE = [512]
@@ -23,11 +23,11 @@ SEED = 2
 CLIPGRAD = False
 TRACKING = False #TRUE WHEN RUNNING EXPERIMENTS WHICH SHOULD BE LOGGED
 DEBUG = True
-EARLYSTOPPING = True
-LSTM_NORMALIZATION = True
+EARLYSTOPPING = False
+LSTM_NORMALIZATION = False
 
-NUM_SAMPLES = "ALL"
-N_EPOCHS = 20
+NUM_SAMPLES = 4#"ALL"
+N_EPOCHS = 10
 
 
 NEXP = len(LSTMSIZE)
@@ -41,7 +41,7 @@ for i in range(NEXP):
         pickle.dump(param_cfg,f) #is overwritten at every iteration
     
 
-    command = "python3 train_wandb.py " + str(path)
+    command = "python3 train_wandb_packed.py " + str(path)
     os.system(command)
     
 

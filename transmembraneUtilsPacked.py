@@ -106,7 +106,7 @@ def dataset_accuracy(model,dataloader,type2key,mode="null",metrics=False): #tryi
           #now output is a list of tensors
           
           for k, output_ in enumerate(output): #go through all outputs
-            probs_ = sm(output)
+            probs_ = sm(output_)
             preds_ = torch.argmax(probs_,dim=1)
             label_ = label_list[k]
             correct_single += torch.sum((preds_==label_))
@@ -124,7 +124,6 @@ def dataset_accuracy(model,dataloader,type2key,mode="null",metrics=False): #tryi
             match_tmp = is_topologies_equal(label_top,preds_top)
             matching_overlap += match_tmp #returns true if correct with at least 5 residue-overlap
             total += 1
-            match_holder.append(match_tmp)
             
 
             if(metrics):
@@ -134,6 +133,7 @@ def dataset_accuracy(model,dataloader,type2key,mode="null",metrics=False): #tryi
                 # else:
                 #   confusion_pr_labels = torch.cat((confusion_pr_labels,label),0)
                 #   confusion_pr_preds = torch.cat((confusion_pr_preds,prot),0)
+                match_holder.append(match_tmp)
                 proteinTypePred, _ = type_from_labels(preds_)
                 confusion_type_preds.append(proteinTypePred)
                 proteinTypeLabel, _ = type_from_labels(label_)
@@ -152,7 +152,7 @@ def dataset_accuracy(model,dataloader,type2key,mode="null",metrics=False): #tryi
                    
       overlap_accuracy = matching_overlap/total
       print("Total nsamples found for overlap: ",total)
-      print("Total nsamples found for single-calculation (should equal batchsize): ",correct_single+incorrect_single)
+      print("Total nsamples found for single-calculation (should equal complete concatenated protein length): ",correct_single+incorrect_single)
       single_residue_accuracy = (correct_single/(correct_single+incorrect_single)).item()
     if(metrics):
        confusion_pr_labels = confusion_pr_labels.to(torch.int32)
@@ -504,7 +504,7 @@ def label_list_to_topology(labels: Union[list[int], torch.Tensor]) -> list[torch
       return top_list
 
 
-def train_single_epoch(model,optimizer,criterion,trainloader,type2key,gradclip=False,clipval=None):
+def train_single_epoch(model,optimizer,criterion,trainloader,type2key,gradclip=False,clipval=None,DEBUG=False):
     running_loss = 0.0
     model.train()
     for i, data in enumerate(trainloader):
@@ -513,8 +513,24 @@ def train_single_epoch(model,optimizer,criterion,trainloader,type2key,gradclip=F
         batch_sz = len(output)
         label = label_to_tensor(data.label,type2key)
         label = torch.split(label,protein_lengths)
+        
+        if(DEBUG and i==len(trainloader)-1):
+          print("Output is:")
+          print(output)
+          print("Length of list is: ")
+          print(len(output))
+          print("Protein lengths are: ")
+          print(protein_lengths)
+          print("Label is: ")
+          print(label)
+
         loss = 0.0
         for output_, label_ in zip(output,label):
+          if(DEBUG and i==len(trainloader)-1):
+             print("Calculating loss for prediction: ")
+             print(output_)
+             print("And label: ")
+             print(label_)
           loss += criterion(output_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
         loss /= batch_sz #normalize loss so it is corresponding to length of the batch
         optimizer.zero_grad()           

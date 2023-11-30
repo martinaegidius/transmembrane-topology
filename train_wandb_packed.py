@@ -1,3 +1,4 @@
+print("STARTED SCRIPT")
 from proteinworkshop.features.factory import ProteinFeaturiser
 from proteinworkshop.datasets.utils import create_example_batch
 #from proteinworkshop.models.graph_encoders.schnet import SchNetModel
@@ -14,6 +15,7 @@ from torch_geometric.utils import unbatch
 import wandb
 import numpy as np 
 import torchmetrics
+import copy
 
 
 ###adapted from google_drive_training_pipe in a modular fashion and to support DTU HPC
@@ -54,13 +56,16 @@ else:
   SAVERESULTS = param_cfg["Save results"]
   NUM_SAMPLES = param_cfg["NUM_SAMPLES"]
 
-
-if(param_cfg["TRACKING"]==True and param_cfg["DEBUG"]==False):
-  print_every = 3#int(N_EPOCHS/60)
-  eval_every = 5#int(N_EPOCHS/40)
-else: #case: debugging
+try:
+   eval_every = param_cfg["VALINTERVAL"]
    print_every = 1
-   eval_every = 10
+except:
+   if(param_cfg["TRACKING"]==True and param_cfg["DEBUG"]==False):
+      print_every = 3#int(N_EPOCHS/60)
+      eval_every = 5#int(N_EPOCHS/40)
+   else: #case: debugging
+      print_every = 1
+      eval_every = 5
 
 #print_every = 1
 #eval_every = 2 
@@ -132,7 +137,6 @@ trainloader = DataLoader(trainSet,batch_size=param_cfg["BATCH_SZ"],shuffle=True,
 valloader = DataLoader(valSet,batch_size=param_cfg["BATCH_SZ"],shuffle=False,num_workers=0)
 testloader = DataLoader(testSet,batch_size=param_cfg["BATCH_SZ"],shuffle=False,num_workers=0)
 
-
 type2key = {'I': 0, 'O':1, 'P': 2, 'S': 3, 'M':4, 'B': 5}  #theirs
 
 if(param_cfg["Featuriser"]=="SIMPLE"):
@@ -172,7 +176,8 @@ if(param_cfg["TRACKING"]==True):
   wandb.login(key="b84e040f3273aa091bbc451cf6e8ae81fa9b09f1")
   run = wandb.init(project=param_cfg["experimentType"],config=param_cfg)
 
-model = GraphEncDec(featuriser=featuriser, n_classes=6,hidden_dim_GCN=param_cfg["GCSize"],decoderType=param_cfg["DecoderType"],LSTM_hidden_dim=param_cfg["LSTMSize"],dropout=param_cfg["Dropout"],LSTMnormalization = param_cfg["LSTMNORM"],sequence=True)
+model = GraphEncDec(featuriser=featuriser, n_classes=6,hidden_dim_GCN=param_cfg["GCSize"],decoderType=param_cfg["DecoderType"],LSTM_hidden_dim=param_cfg["LSTMSize"],dropout=param_cfg["Dropout"],LSTMnormalization = param_cfg["LSTMNORM"],lstm_layers=param_cfg["LSTMLAYERS"])
+print(model)
 model.apply(init_linear_weights) #change to xavier normal init
 model = model.to(device)
 optimizer = torch.optim.Adam(model.parameters(),lr=param_cfg["LR"],weight_decay=param_cfg["WEIGHTDECAY"])
@@ -212,21 +217,38 @@ def gradNorm(model):
    return norm
 
 class EarlyStopping:
-    def __init__(self, tolerance=5, min_delta=0.01):
-
+    def __init__(self, tolerance=10,path="./"):
         self.tolerance = tolerance
-        self.min_delta = min_delta
         self.counter = 0
         self.early_stop = False
+        self.min_loss = 1000.0
+        self.modelCheckPoint = None
+        self.path = path
 
-    def __call__(self, train_loss, validation_loss):
-        if (validation_loss - train_loss) > self.min_delta:
+    def __call__(self, validation_loss,model):
+        print("Holding minimum loss: ", self.min_loss)
+        print("received: ",validation_loss)
+        print("with type: ",type(validation_loss))
+        if(validation_loss<self.min_loss):
+           print("ENCOUNTERED LOWER VALIDATION LOSS")
+           self.modelCheckPoint = copy.deepcopy(model.state_dict())
+           self.min_loss = validation_loss
+           self.counter = 0
+        else:
             self.counter +=1
             if self.counter >= self.tolerance:  
                 self.early_stop = True
+                print("EARLY STOPPING TRIGGERED.")
+                self.saveModel()
+
+    def saveModel(self):
+       modPath = self.path+"checkpoint.pt"
+       torch.save(self.modelCheckPoint, modPath)
+       print("Saved best model checkpoint to: ", modPath)
+       return 
 
 if(param_cfg["EARLYSTOP"]):
-   early_stopping = EarlyStopping(tolerance=6,min_delta=0.0)
+   early_stopping = EarlyStopping(tolerance=15,path=os.environ["BLACKHOLE"]+"/"+run.name)
 
 
 for i in range(param_cfg["N_EPOCHS"]):
@@ -236,13 +258,15 @@ for i in range(param_cfg["N_EPOCHS"]):
     else:
       loss /= len(trainloader) #number of batches in loader, slightly positively biased if the number of batches is not equal
     epoch_loss.append(loss)
+    
+    grad_norm = gradNorm(model)
     train_metrics = {"train/loss":loss,
-                     "train/epoch":i}
+                     "train/epoch":i,
+                     "train/Grad-L2":grad_norm}
     if(param_cfg["TRACKING"]==True):
        wandb.log(train_metrics)
     if(i%print_every==0):
       print(f"Loss in epoch {i}: {loss}")
-      grad_norm = gradNorm(model)
       print(f"Gradient L2 norm in epoch {i} is {grad_norm}")
     
     if(i>0 and i%eval_every==0):
@@ -258,8 +282,8 @@ for i in range(param_cfg["N_EPOCHS"]):
           label = tmu.label_to_tensor(data.label,type2key)
           label = torch.split(label,protein_lengths)
           batch_sz = len(label)
-          for output_, label_ in zip(output,label):
-            v_loss += criterion(output_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
+          for pred_, label_ in zip(pred,label):
+            v_loss += criterion(pred_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
           v_loss /= batch_sz #normalize loss so it is corresponding to length of the batch
           valloss += v_loss
           val_loss_li.append(v_loss.item())
@@ -269,7 +293,7 @@ for i in range(param_cfg["N_EPOCHS"]):
          valloss /= len(valloader) #also normalize using the number of batches
       
       val_acc,val_acc_overlap = tmu.dataset_accuracy(model,valloader,type2key) #get accuracy
-      print(f"Val accuracy/overlap {val_acc}/{val_acc_overlap}")
+      print(f"Val accuracy/overlap/loss {val_acc}/{val_acc_overlap}/{valloss}")
       train_acc,train_acc_overlap = tmu.dataset_accuracy(model,trainloader,type2key)
       print(f"Train accuracy/overlap {train_acc}/{train_acc_overlap}")
       if(param_cfg["TRACKING"]==True):
@@ -319,13 +343,57 @@ for i in range(param_cfg["N_EPOCHS"]):
       model.train()
 
       if(param_cfg["EARLYSTOP"]):
-         early_stopping(loss,valloss)
+         early_stopping(valloss.item(),model)
          if early_stopping.early_stop:
-            print("Early stopping triggered at epoch :", i)
+            print("Early stopping and model from tolerance epochs ago saved to scratch. triggered at epoch :", i)
+            del model 
             break
+
+
+if(param_cfg["Featuriser"]=="SIMPLE"):
+  featuriser = ProteinFeaturiser( #note: input is a protein Batch
+          representation="CA",
+          scalar_node_features=["amino_acid_one_hot"],
+          vector_node_features=[],
+          edge_types=["knn_16"],
+          scalar_edge_features=["edge_distance"],
+          vector_edge_features=[],
+        )
+
+if(param_cfg["Featuriser"]=="INTERMEDIATE"):
+  featuriser = ProteinFeaturiser( #note: input is a protein Batch
+          representation="CA",
+          scalar_node_features=["amino_acid_one_hot","sequence_positional_encoding","alpha","kappa","dihedrals"],
+          vector_node_features=[],
+          edge_types=["knn_16"],
+          scalar_edge_features=["edge_distance"],
+          vector_edge_features=[],
+        )
+  
+if(param_cfg["Featuriser"]=="COMPLEX"):#in general, according to paper, this should work less well than INTERMEDIATE
+  featuriser = ProteinFeaturiser( #note: input is a protein Batch
+          representation="CA",
+          scalar_node_features=["amino_acid_one_hot","sequence_positional_encoding","alpha","kappa","dihedrals","sidechain_torsions"],
+          vector_node_features=[],
+          edge_types=["knn_16"],
+          scalar_edge_features=["edge_distance"],
+          vector_edge_features=[],
+        )
     
 
+if early_stopping.early_stop: 
+   device = torch.device("cuda")
+   model = GraphEncDec(featuriser=featuriser, n_classes=6,hidden_dim_GCN=param_cfg["GCSize"],decoderType=param_cfg["DecoderType"],LSTM_hidden_dim=param_cfg["LSTMSize"],dropout=param_cfg["Dropout"],LSTMnormalization = param_cfg["LSTMNORM"],lstm_layers=param_cfg["LSTMLAYERS"])
+   model.load_state_dict(torch.load(early_stopping.path+"checkpoint.pt"))
+   model = model.to(device)
+   #model.to(device)
+   model.eval()
+   print("Loaded best saved model")
 
+else:
+   torch.save(model.state_dict(), os.environ["BLACKHOLE"]+"/"+run.name+"checkpoint.pt")
+   print("Early stopping never encountered. Saved current state to scratch.")
+   
 
 
 ###-----------------------------------------------TEST MODEL 
@@ -345,13 +413,11 @@ with torch.no_grad():
     loss = 0.0
     preds,protein_lengths = model(data,data.batch)
     label = tmu.label_to_tensor(data.label,type2key) #numeric conversion
-    label = torch.split(label,protein_lengths)
-    labelStr = torch.split(data.label,protein_lengths) #unbatch
-
+    label = torch.split(label,protein_lengths) #list of numeric labels
     pred_classes = []
-    for pred_, label_,id_,labelStr_ in zip(preds,label,data.id,labelStr):
+    for pred_, label_,id_,labelStr_ in zip(preds,label,data.id,data.label):
        loss_ = criterion(pred_,label_) #no need to worry about batching as graph is disjoint by design -> in principle no batching
-       loss += loss_.item()
+       loss += loss_
        pred_sm = sm(pred_)
        pred_test_ = torch.argmax(pred_sm,dim=1)
        pred_classes.append(pred_test_)   
@@ -369,14 +435,20 @@ with torch.no_grad():
        label_top = tmu.label_list_to_topology(label_)
        match_tmp = tmu.is_topologies_equal(label_top,preds_top)
 
+       #print("IN EVAL TEST: ")
+       #print("prediction")
+       #print(pred_test_)
+       #print("label")
+       #print(label_)
+
 
        test_loss_results[id_.replace("_ABCD","")] = loss_.item()
-       test_predictions[id_.replace("_ABCD","")] = {"prediction":pred_,"label":labelStr_,"Type prediction":pred_protein_label,"Type label":true_protein_label,"Match":match_tmp}   
+       test_predictions[id_.replace("_ABCD","")] = {"prediction":pred_test_.tolist(),"label":label_.tolist(),"Type prediction":pred_protein_label,"Type label":true_protein_label,"Match":match_tmp}   
     loss/=len(preds) #normalize for batch
     test_loss += loss.item()
     if(param_cfg["TRACKING"]==True):
         if i in test_sample_idx: #if this batch is to be saved to table
-            epoch_ = [param_cfg["N_EPOCHS"] for x in len(pred_classes)]#repeat so it matches
+            epoch_ = [param_cfg["N_EPOCHS"] for x in range(len(pred_classes))]#repeat so it matches
             ids_, labels_, preds_, accuracy_, overlap_match_,label_type_,pred_type_ = tmu.log_batch_elementwise_accuracies(pred_classes,label,data.id)
             log_prediction_table(epoch_,ids_,labels_,preds_,accuracy_,overlap_match_,label_type_,pred_type_,type="test")
 
